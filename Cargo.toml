@@ -16,9 +16,8 @@ postcard = "1.0"
 serde = { version = "1.0", default-features = false }
 
 [dependencies.neotron-os]
-# git = "https://github.com/neotron-compute/Neotron-OS"
-# branch = "lib-mode"
-path = "../Neotron-OS"
+git = "https://github.com/neotron-compute/Neotron-OS"
+branch = "lib-mode"
 features = ["lib-mode"]
 
 # Lets you use cargo-fix
