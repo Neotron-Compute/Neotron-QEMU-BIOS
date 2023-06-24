@@ -12,10 +12,13 @@ cortex-m-rt = "0.6"
 cortex-m-semihosting = "0.5"
 neotron-common-bios = "*"
 panic-semihosting = "*"
+postcard = "1.0"
+serde = { version = "1.0", default-features = false }
 
 [dependencies.neotron-os]
-git = "https://github.com/neotron-compute/Neotron-OS"
-branch = "lib-mode"
+# git = "https://github.com/neotron-compute/Neotron-OS"
+# branch = "lib-mode"
+path = "../Neotron-OS"
 features = ["lib-mode"]
 
 # Lets you use cargo-fix

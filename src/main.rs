@@ -9,8 +9,6 @@ extern crate panic_semihosting;
 
 mod mutex;
 
-use core::fmt::Write;
-
 use cortex_m_rt::entry;
 use neotron_common_bios as common;
 
@@ -21,10 +19,11 @@ extern "C" {
     static mut _ram_os_len: u32;
 }
 
-static mut VRAM: [u8; 8000] = [0u8; 8000];
+/// Where the OS can put the text characters
+static mut VRAM: [(u8, u8); 80 * 50] = [(0, 0); 80 * 50];
 
 /// BIOS Version
-static BIOS_VERSION: &'static str = "v0.1.0";
+static BIOS_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// The API we provide to the OS
 static API_CALLS: common::Api = common::Api {
@@ -78,10 +77,62 @@ static API_CALLS: common::Api = common::Api {
     power_idle,
 };
 
+/// A driver for CMSDK Uart
+struct Uart<const ADDR: usize>();
+
+impl<const ADDR: usize> Uart<ADDR> {
+    const STATUS_TX_FULL: u32 = 1 << 0;
+    const STATUS_RX_NON_EMPTY: u32 = 1 << 1;
+
+    /// Turn on TX and RX
+    fn enable(&mut self) {
+        self.set_control(0b0000_0011);
+    }
+
+    /// Write a byte (blocking if there's no space)
+    fn write(&mut self, byte: u8) {
+        // Check the Buffer Full bit
+        while (self.get_status() & Self::STATUS_TX_FULL) != 0 {}
+        self.set_data(byte as u32);
+    }
+
+    /// Try and read a byte
+    fn read(&mut self) -> Option<u8> {
+        if (self.get_status() & Self::STATUS_RX_NON_EMPTY) != 0 {
+            Some(self.get_data() as u8)
+        } else {
+            None
+        }
+    }
+
+    /// Read the data register
+    fn get_data(&mut self) -> u32 {
+        let ptr = ADDR as *mut u32;
+        unsafe { ptr.read_volatile() }
+    }
+
+    /// Write the data register
+    fn set_data(&mut self, data: u32) {
+        let ptr = ADDR as *mut u32;
+        unsafe { ptr.write_volatile(data) }
+    }
+
+    /// Read the status register
+    fn get_status(&self) -> u32 {
+        let ptr = (ADDR + 4) as *mut u32;
+        unsafe { ptr.read_volatile() }
+    }
+
+    fn set_control(&mut self, data: u32) {
+        let ptr = (ADDR + 8) as *mut u32;
+        unsafe { ptr.write_volatile(data) }
+    }
+}
+
 /// Describes the hardware in the system
 struct Hardware {
     _cp: cortex_m::Peripherals,
-    // Add your CPU specific hardware here
+    uart0: Uart<0x4000_4000>,
 }
 
 static HARDWARE: mutex::NeoMutex<Option<Hardware>> = mutex::NeoMutex::new(None);
@@ -93,7 +144,7 @@ fn bios_main() -> ! {
     let h = hardware_setup();
 
     // Print the BIOS version
-    writeln!(&h, "Neotron QEMU BIOS {}", BIOS_VERSION).unwrap();
+    cortex_m_semihosting::hprintln!("Neotron QEMU BIOS {}", BIOS_VERSION);
 
     *HARDWARE.lock() = Some(h);
 
@@ -104,21 +155,7 @@ fn bios_main() -> ! {
 fn hardware_setup() -> Hardware {
     Hardware {
         _cp: cortex_m::Peripherals::take().expect("Couldn't get hardware"),
-    }
-}
-
-impl Hardware {
-    fn write_bytes(&self, msg: &[u8]) {
-        let str = core::str::from_utf8(msg).unwrap();
-        let _ = cortex_m_semihosting::hprint!("{}", str);
-    }
-}
-
-impl core::fmt::Write for &Hardware {
-    fn write_str(&mut self, msg: &str) -> core::fmt::Result {
-        // TODO: write to the screen
-        let _ = cortex_m_semihosting::hprint!("{}", msg);
-        Ok(())
+        uart0: Uart(),
     }
 }
 
@@ -152,9 +189,6 @@ pub extern "C" fn bios_version_get() -> common::ApiString<'static> {
 /// reflect the raw hardware, in a similar manner to the registers exposed
 /// by a memory-mapped UART peripheral.
 pub extern "C" fn serial_get_info(device: u8) -> common::Option<common::serial::DeviceInfo> {
-    let hw = HARDWARE.lock();
-    let mut hw = hw.as_ref().unwrap();
-    let _ = writeln!(hw, "serial_get_info({})", device);
     if device == 0 {
         common::Option::Some(common::serial::DeviceInfo {
             name: common::ApiString::new("ser0"),
@@ -169,12 +203,14 @@ pub extern "C" fn serial_get_info(device: u8) -> common::Option<common::serial::
 /// options are invalid for that serial device.
 pub extern "C" fn serial_configure(
     device: u8,
-    config: common::serial::Config,
+    _config: common::serial::Config,
 ) -> common::Result<()> {
-    let hw = HARDWARE.lock();
-    let hw = hw.as_ref();
-    let mut hw = hw.unwrap();
-    let _ = writeln!(hw, "serial_configure({}, {:?})", device, config);
+    if device == 0 {
+        let mut hw = HARDWARE.lock();
+        let hw = hw.as_mut().unwrap();
+        // Ignore all the settings and just turn the thing on
+        hw.uart0.enable();
+    }
     common::Result::Ok(())
 }
 
@@ -188,11 +224,13 @@ pub extern "C" fn serial_write(
     data: common::ApiByteSlice,
     _timeout: common::Option<common::Timeout>,
 ) -> common::Result<usize> {
-    let hw = HARDWARE.lock();
-    let hw = hw.as_ref().unwrap();
     if device == 0 {
+        let mut hw = HARDWARE.lock();
+        let hw = hw.as_mut().unwrap();
         let bytes = data.as_slice();
-        hw.write_bytes(bytes);
+        for b in bytes {
+            hw.uart0.write(*b);
+        }
         common::Result::Ok(bytes.len())
     } else {
         common::Result::Err(common::Error::InvalidDevice)
@@ -205,11 +243,29 @@ pub extern "C" fn serial_write(
 ///  If so, that means not all of the data could be received - only the
 ///  first `n` bytes were filled in.
 pub extern "C" fn serial_read(
-    _device: u8,
-    _data: common::ApiBuffer,
+    device: u8,
+    mut data: common::ApiBuffer,
     _timeout: common::Option<common::Timeout>,
 ) -> common::Result<usize> {
-    common::Result::Err(common::Error::Unimplemented)
+    if device == 0 {
+        let mut hw = HARDWARE.lock();
+        let hw = hw.as_mut().unwrap();
+        let Some(bytes) = data.as_mut_slice() else {
+            return common::Result::Err(common::Error::UnsupportedConfiguration(0));
+        };
+        let mut count = 0;
+        for b in bytes {
+            if let Some(read) = hw.uart0.read() {
+                *b = read;
+                count += 1;
+            } else {
+                break;
+            }
+        }
+        common::Result::Ok(count)
+    } else {
+        common::Result::Err(common::Error::InvalidDevice)
+    }
 }
 
 /// Get the current wall time.
@@ -237,40 +293,39 @@ pub extern "C" fn time_clock_get() -> common::Time {
 /// time (e.g. the user has updated the current time, or if you get a GPS
 /// fix). The BIOS should push the time out to the battery-backed Real
 /// Time Clock, if it has one.
-pub extern "C" fn time_clock_set(time: common::Time) {}
+pub extern "C" fn time_clock_set(_time: common::Time) {}
 
 /// Get the configuration data block.
 ///
-/// Configuration data is, to the BIOS, just a block of bytes of a given
-/// length. How it stores them is up to the BIOS - it could be EEPROM, or
-/// battery-backed SRAM.
+/// Configuration data is, to the BIOS, just a block of bytes of a given length.
+/// How it stores them is up to the BIOS - it could be EEPROM, or battery-backed
+/// SRAM.
+///
+/// However, in this BIOS we are linked to the OS so we can cheat and encode the
+/// bytes with postcard directly.
 pub extern "C" fn configuration_get(mut buffer: common::ApiBuffer) -> common::Result<usize> {
-    // These bytes turn on serial and turn off video
-    let default = [0u8, 1, 80, 84, 7];
-    for (dest, src) in buffer
-        .as_mut_slice()
-        .unwrap()
-        .iter_mut()
-        .zip(default.iter())
-    {
-        *dest = *src;
+    let mut config = neotron_os::OsConfig::default();
+    config.set_serial_console_on(115_200);
+    config.set_vga_console(false);
+
+    let Some(buffer) = buffer.as_mut_slice() else {
+        return common::Result::Err(common::Error::UnsupportedConfiguration(0));
+    };
+    match postcard::to_slice(&config, buffer) {
+        Ok(slice) => common::Result::Ok(slice.len()),
+        Err(_e) => common::Result::Err(common::Error::UnsupportedConfiguration(0)),
     }
-    common::Result::Ok(default.len())
 }
 
 /// Set the configuration data block.
 ///
 /// See `configuration_get`.
-pub extern "C" fn configuration_set(buffer: common::ApiByteSlice) -> common::Result<()> {
-    let hw = HARDWARE.lock();
-    let hw = hw.as_ref();
-    let mut hw = hw.unwrap();
-    let _ = writeln!(hw, "Config: {:x?}", buffer.as_slice());
+pub extern "C" fn configuration_set(_buffer: common::ApiByteSlice) -> common::Result<()> {
     common::Result::Ok(())
 }
 
 /// Does this Neotron BIOS support this video mode?
-pub extern "C" fn video_is_valid_mode(mode: common::video::Mode) -> bool {
+pub extern "C" fn video_is_valid_mode(_mode: common::video::Mode) -> bool {
     false
 }
 
@@ -283,7 +338,7 @@ pub extern "C" fn video_is_valid_mode(mode: common::video::Mode) -> bool {
 /// `video_get_framebuffer` will return `null`. You must then supply a
 /// pointer to a block of size `Mode::frame_size_bytes()` to
 /// `video_set_framebuffer` before any video will appear.
-pub extern "C" fn video_set_mode(mode: common::video::Mode) -> common::Result<()> {
+pub extern "C" fn video_set_mode(_mode: common::video::Mode) -> common::Result<()> {
     common::Result::Err(common::Error::UnsupportedConfiguration(0))
 }
 
@@ -310,7 +365,7 @@ pub extern "C" fn video_get_mode() -> common::video::Mode {
 /// to provide the 'basic' text buffer experience from reserves, so this
 /// function will never return `null` on start-up.
 pub extern "C" fn video_get_framebuffer() -> *mut u8 {
-    unsafe { VRAM.as_mut_ptr() }
+    unsafe { VRAM.as_mut_ptr() as *mut u8 }
 }
 
 /// Set the framebuffer address.
@@ -427,20 +482,20 @@ pub extern "C" fn hid_set_leds(_leds: common::hid::KeyboardLeds) -> common::Resu
 /// You can also use this for a crude `16.7 ms` delay but note that
 /// some video modes run at `70 Hz` and so this would then give you a
 /// `14.3ms` second delay.
-pub extern "C" fn video_wait_for_line(line: u16) {}
+pub extern "C" fn video_wait_for_line(_line: u16) {}
 
 /// Read the RGB palette.
-extern "C" fn video_get_palette(index: u8) -> common::Option<common::video::RGBColour> {
+extern "C" fn video_get_palette(_index: u8) -> common::Option<common::video::RGBColour> {
     common::Option::None
 }
 
 /// Update the RGB palette.
-extern "C" fn video_set_palette(index: u8, rgb: common::video::RGBColour) {}
+extern "C" fn video_set_palette(_index: u8, _rgb: common::video::RGBColour) {}
 
 /// Update all the RGB palette
 unsafe extern "C" fn video_set_whole_palette(
-    palette: *const common::video::RGBColour,
-    length: usize,
+    _palette: *const common::video::RGBColour,
+    _length: usize,
 ) {
 }
 
@@ -535,7 +590,7 @@ extern "C" fn bus_interrupt_status() -> u32 {
 /// The set of devices is not expected to change at run-time - removal of
 /// media is indicated with a boolean field in the
 /// `block_dev::DeviceInfo` structure.
-pub extern "C" fn block_dev_get_info(device: u8) -> common::Option<common::block_dev::DeviceInfo> {
+pub extern "C" fn block_dev_get_info(_device: u8) -> common::Option<common::block_dev::DeviceInfo> {
     common::Option::None
 }
 
@@ -565,10 +620,10 @@ pub extern "C" fn block_write(
 /// There are no requirements on the alignment of `data` but if it is
 /// aligned, the BIOS may be able to use a higher-performance code path.
 pub extern "C" fn block_read(
-    device: u8,
-    block: common::block_dev::BlockIdx,
-    num_blocks: u8,
-    data: common::ApiBuffer,
+    _device: u8,
+    _block: common::block_dev::BlockIdx,
+    _num_blocks: u8,
+    _data: common::ApiBuffer,
 ) -> common::Result<()> {
     common::Result::Err(common::Error::Unimplemented)
 }
