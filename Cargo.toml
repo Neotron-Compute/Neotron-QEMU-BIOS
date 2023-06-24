@@ -1,19 +1,26 @@
 [package]
-name = "neotron-xxx-bios"
+name = "neotron-qemu-bios"
 version = "0.1.0"
-authors = ["Some Developer <some.developer@example.com>"]
-edition = "2018"
+authors = ["Jonathan 'theJPster' Pallant <github@thejpster.org.uk>"]
+edition = "2021"
 readme = "README.md"
+license = "GPL3"
 
 [dependencies]
-cortex-m = "0.6.0"
-cortex-m-rt = "0.6.10"
-panic-halt = "0.2.0"
-# TODO add more dependencies here, like the BIOS API crate
+cortex-m = "0.7"
+cortex-m-rt = "0.6"
+cortex-m-semihosting = "0.5"
+neotron-common-bios = "*"
+panic-semihosting = "*"
+
+[dependencies.neotron-os]
+git = "https://github.com/neotron-compute/Neotron-OS"
+branch = "lib-mode"
+features = ["lib-mode"]
 
 # Lets you use cargo-fix
 [[bin]]
-name = "neotron-xxx-bios"
+name = "neotron-qemu-bios"
 test = false
 bench = false
 

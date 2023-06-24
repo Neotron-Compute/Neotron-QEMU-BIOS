@@ -1,0 +1,9 @@
+[target.thumbv7m-none-eabi]
+# You can add `-d in_asm,int,exec,cpu,guest_errors,unimp` before `-kernel` to turn on extra debugging.
+# Stops for GDB
+runner = 'qemu-system-arm  -gdb tcp::3333 -S -cpu cortex-m3 -machine mps2-an385 -semihosting-config enable=on,target=native -kernel'
+
+# Runs automatically
+# runner = 'qemu-system-arm -cpu cortex-m3 -machine mps2-an385 -semihosting-config enable=on,target=native -kernel'
+[build]
+target = "thumbv7m-none-eabi"

@@ -1,62 +1,58 @@
-# Neotron-XXX-BIOS
+# Neotron QEMU BIOS
 
-> Template repository for new BIOS implementations. You should delete these
-> quoted blocks and correct the rest of the text as required.
+A [Neotron](https://github.com/neotron-compute) BIOS that runs on `qemu-system-arm`.
 
-This is the [Neotron](https://github.com/neotron-compute) BIOS for the FooBar XYZ development board.
+We use QEMU to emulate an Arm Cortex-M3 developer kit - the MPS2-AN385.
 
-![Build Status](https://github.com/$GITHUB_USERNAME/$GITHUB_REPO/workflows/Build/badge.svg "Github Action Build Status")
+Just install `qemu-system-arm` and run:
 
-![Format Status](https://github.com/$GITHUB_USERNAME/$GITHUB_REPO/workflows/Format/badge.svg "Github Action Format Check Status")
+```console
+$ cargo run
+```
+
+Or you can:
+
+```console
+$ cargo build
+$ qemu-system-arm -cpu cortex-m3 -machine mps2-an385 -semihosting-config enable=on,target=native -kernel ./target/thumbv7m-none-eabi/debug/neotron-qemu-bios
+```
+
+To debug, try:
+
+```console
+$ cargo build
+$ qemu-system-arm -gdb tcp::3333 -S -cpu cortex-m3 -machine mps2-an385 -semihosting-config enable=on,target=native -kernel ./target/thumbv7m-none-eabi/debug/neotron-qemu-bios
+```
+
+Then, in another terminal:
+
+```console
+$ gdb ./target/thumbv7m-none-eabi/debug/neotron-qemu-bios
+```
+
+![Build Status](https://github.com/thejpster/neotron-qemu-bios/workflows/Build/badge.svg "Github Action Build Status")
+
+![Format Status](https://github.com/thejpster/neotron-qemu-bios/workflows/Format/badge.svg "Github Action Format Check Status")
 
 ## Compatibility
 
-This BIOS will run on the official FooBar XYZ Developer Kit, and also the FooBar XYZ Explorer board. Both feature the same FooBar XYZ SoC. Other boards with the same SoC can be supported with a minor change to the pin configurations.
+This BIOS will run on QEMU when set to emulate an Arm MPS2-AN385.
 
 ## Features
 
-> Replace this with the specs of your board!
-
-The FooBar XYZ Developer Kit offers:
-
-* 128 KiB RAM
-* 512 KiB Flash
-* Cortex-M4 clocked at 64 MHz
-* SD/MMC Slot, with DMA
-* 3-wire TTL UART
-* Hardware accelerated graphics blitter
-* 8-colour VGA output on pins P0, P1, P2, P4 and P5.
-* Stereo sound on the on-board 3.5mm jack
-
-The FooBar XYZ Explorer Board adds:
-
-* On-board LCD with 480x272 resolution (60x17 text mode) in 16 colours
-* RS-232 port
+* Serial output, which goes to the QEMU console.
 
 ## Changelog
 
-> Your repo should implement a Changelog in this format. Add a new section
-> every time you tag a release. Don't forget to change `$GITHUB_USERNAME` and
-> `$GITHUB_REPO` to the appropriate values for your repository!
-
-### Unreleased Changes ([Source](https://github.com/$GITHUB_USERNAME/$GITHUB_REPO/tree/master) | [Changes](https://github.com/$GITHUB_USERNAME/$GITHUB_REPO/compare/v0.2.0...master))
-
-* None
-
-### v0.2.0 ([Source](https://github.com/$GITHUB_USERNAME/$GITHUB_REPO/tree/v0.2.0) | [Changes](https://github.com/$GITHUB_USERNAME/$GITHUB_REPO/compare/v0.1.0...v0.2.0))
-
-* Fixed changelog in README.
-
-### v0.1.0 ([Source](https://github.com/$GITHUB_USERNAME/$GITHUB_REPO/tree/v0.1.0))
+### Unreleased Changes ([Source](https://github.com/thejpster/neotron-qemu-bios/tree/master) | [Changes](https://github.com/thejpster/neotron-qemu-bios/compare/v0.2.0...master))
 
 * First release
 
 ## Licence
 
-> This is an example licence. You can change it if you so desire, but please
-> do pay attention to the licenses of any components you use in your BIOS.
-
-	Neotron-XXX-BIOS Copyright (c) Some Developer, 2019
+	Neotron-QEMU-BIOS
+    Copyright (c) Jonathan 'theJPster' Pallant, 2023
+    Copyright (c) The Neotron Developers, 2023
 
 	This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
