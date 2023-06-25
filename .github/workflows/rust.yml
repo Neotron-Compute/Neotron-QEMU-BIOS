@@ -4,12 +4,31 @@ on: [push, pull_request]
 
 jobs:
   build:
-
+    name: Build (and Release)
     runs-on: ubuntu-latest
-
     steps:
-    - uses: actions/checkout@v1
-    - name: Add Target
-      run: rustup target add thumbv7m-none-eabi
-    - name: Build
-      run: cargo build --verbose --target=thumbv7m-none-eabi
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          submodules: true
+      - name: Install Targets and Tools
+        run: |
+          rustup target add thumbv7m-none-eabi
+          rustup component add llvm-tools-preview
+          cargo install cargo-binutils
+      - name: Check Syntax
+        run: |
+          cargo check
+      - name: Build Debug
+        run: cargo build
+      - name: Build Release
+        run: cargo build --release
+      - name: Size
+        run: cargo size --release -- -A
+      - name: Upload files to Release
+        if: github.event_name == 'push' && startswith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            ./target/thumbv7m-none-eabi/debug/neotron-qemu-bios
+            ./target/thumbv7m-none-eabi/release/neotron-qemu-bios
