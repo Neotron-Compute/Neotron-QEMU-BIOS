@@ -5,9 +5,9 @@
 #![no_std]
 #![no_main]
 
-extern crate panic_semihosting;
-
 mod mutex;
+
+use core::fmt::Write;
 
 use cortex_m_rt::entry;
 use neotron_common_bios as common;
@@ -17,10 +17,15 @@ extern "C" {
     static mut _flash_os_len: u32;
     static mut _ram_os_start: u32;
     static mut _ram_os_len: u32;
+    static mut _disk_start: u32;
+    static mut _disk_end: u32;
 }
 
 /// Where the OS can put the text characters
 static mut VRAM: [(u8, u8); 80 * 50] = [(0, 0); 80 * 50];
+
+/// The clock speed of the peripheral subsystem on an SSE-300 SoC an on MPS3 board
+const PERIPHERAL_CLOCK: u32 = 25_000_000;
 
 /// BIOS Version
 static BIOS_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -85,7 +90,9 @@ impl<const ADDR: usize> Uart<ADDR> {
     const STATUS_RX_NON_EMPTY: u32 = 1 << 1;
 
     /// Turn on TX and RX
-    fn enable(&mut self) {
+    fn enable(&mut self, baudrate: u32, system_clock: u32) {
+        let divider = system_clock / baudrate;
+        self.set_bauddiv(divider);
         self.set_control(0b0000_0011);
     }
 
@@ -123,28 +130,49 @@ impl<const ADDR: usize> Uart<ADDR> {
         unsafe { ptr.read_volatile() }
     }
 
+    /// Set the control register
     fn set_control(&mut self, data: u32) {
         let ptr = (ADDR + 8) as *mut u32;
         unsafe { ptr.write_volatile(data) }
+    }
+
+    /// Set the baud rate divider register
+    fn set_bauddiv(&mut self, data: u32) {
+        let ptr = (ADDR + 16) as *mut u32;
+        unsafe { ptr.write_volatile(data) }
+    }
+}
+
+impl<const N: usize> core::fmt::Write for Uart<N> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        for b in s.bytes() {
+            self.write(b);
+        }
+        Ok(())
     }
 }
 
 /// Describes the hardware in the system
 struct Hardware {
     _cp: cortex_m::Peripherals,
-    uart0: Uart<0x4000_4000>,
+    uart0: Uart<0x5930_3000>,
 }
 
 static HARDWARE: mutex::NeoMutex<Option<Hardware>> = mutex::NeoMutex::new(None);
+
+#[link_section = ".disk_image"]
+static mut DISK_IMAGE: [u8; 64 * 1024 * 1024] = *include_bytes!("disk.img");
 
 /// Entry point for the BIOS. This is called by the startup code.
 #[entry]
 fn bios_main() -> ! {
     // Set up the hardware
-    let h = hardware_setup();
+    let mut h = hardware_setup();
 
     // Print the BIOS version
-    cortex_m_semihosting::hprintln!("Neotron QEMU BIOS {}", BIOS_VERSION);
+    write!(h.uart0, "Neotron QEMU BIOS {}\r\n", BIOS_VERSION).unwrap();
+    write!(h.uart0, "Disk Start: {:p}\r\n", unsafe { &_disk_start }).unwrap();
+    write!(h.uart0, "Disk End  : {:p}\r\n", unsafe { &_disk_end }).unwrap();
 
     *HARDWARE.lock() = Some(h);
 
@@ -153,9 +181,11 @@ fn bios_main() -> ! {
 
 /// Configure the hardware
 fn hardware_setup() -> Hardware {
+    let mut uart0 = Uart();
+    uart0.enable(115200, PERIPHERAL_CLOCK);
     Hardware {
         _cp: cortex_m::Peripherals::take().expect("Couldn't get hardware"),
-        uart0: Uart(),
+        uart0,
     }
 }
 
@@ -203,13 +233,13 @@ pub extern "C" fn serial_get_info(device: u8) -> common::Option<common::serial::
 /// options are invalid for that serial device.
 pub extern "C" fn serial_configure(
     device: u8,
-    _config: common::serial::Config,
+    config: common::serial::Config,
 ) -> common::Result<()> {
     if device == 0 {
         let mut hw = HARDWARE.lock();
         let hw = hw.as_mut().unwrap();
         // Ignore all the settings and just turn the thing on
-        hw.uart0.enable();
+        hw.uart0.enable(config.data_rate_bps, PERIPHERAL_CLOCK);
     }
     common::Result::Ok(())
 }
@@ -229,6 +259,9 @@ pub extern "C" fn serial_write(
         let hw = hw.as_mut().unwrap();
         let bytes = data.as_slice();
         for b in bytes {
+            if *b == b'\n' {
+                hw.uart0.write(b'\r');
+            }
             hw.uart0.write(*b);
         }
         common::Result::Ok(bytes.len())
@@ -590,8 +623,22 @@ extern "C" fn bus_interrupt_status() -> u32 {
 /// The set of devices is not expected to change at run-time - removal of
 /// media is indicated with a boolean field in the
 /// `block_dev::DeviceInfo` structure.
-pub extern "C" fn block_dev_get_info(_device: u8) -> common::Option<common::block_dev::DeviceInfo> {
-    common::Option::None
+pub extern "C" fn block_dev_get_info(device: u8) -> common::Option<common::block_dev::DeviceInfo> {
+    if device == 0 {
+        // Our emulated disk drive, sitting in DDR4 SDRAM
+        common::Option::Some(common::block_dev::DeviceInfo {
+            name: common::ApiString::new("ddr0"),
+            device_type: common::block_dev::DeviceType::HardDiskDrive,
+            block_size: 512,
+            num_blocks: unsafe { DISK_IMAGE.len() } as u64 / 512,
+            ejectable: false,
+            removable: false,
+            media_present: true,
+            read_only: false,
+        })
+    } else {
+        common::Option::None
+    }
 }
 
 /// Write one or more sectors to a block device.
@@ -603,12 +650,22 @@ pub extern "C" fn block_dev_get_info(_device: u8) -> common::Option<common::bloc
 /// There are no requirements on the alignment of `data` but if it is
 /// aligned, the BIOS may be able to use a higher-performance code path.
 pub extern "C" fn block_write(
-    _device: u8,
-    _block: common::block_dev::BlockIdx,
+    device: u8,
+    block: common::block_dev::BlockIdx,
     _num_blocks: u8,
-    _data: common::ApiByteSlice,
+    data: common::ApiByteSlice,
 ) -> common::Result<()> {
-    common::Result::Err(common::Error::Unimplemented)
+    if device != 0 {
+        return common::Result::Err(common::Error::InvalidDevice);
+    }
+    let mut offset = (block.0 * 512) as usize;
+    for b in data.as_slice() {
+        unsafe {
+            DISK_IMAGE[offset] = *b;
+        }
+        offset += 1;
+    }
+    common::Result::Ok(())
 }
 
 /// Read one or more sectors to a block device.
@@ -620,12 +677,22 @@ pub extern "C" fn block_write(
 /// There are no requirements on the alignment of `data` but if it is
 /// aligned, the BIOS may be able to use a higher-performance code path.
 pub extern "C" fn block_read(
-    _device: u8,
-    _block: common::block_dev::BlockIdx,
+    device: u8,
+    block: common::block_dev::BlockIdx,
     _num_blocks: u8,
-    _data: common::ApiBuffer,
+    mut data: common::ApiBuffer,
 ) -> common::Result<()> {
-    common::Result::Err(common::Error::Unimplemented)
+    if device != 0 {
+        return common::Result::Err(common::Error::InvalidDevice);
+    }
+    let mut offset = (block.0 * 512) as usize;
+    for b in data.as_mut_slice().unwrap() {
+        unsafe {
+            *b = DISK_IMAGE[offset];
+        }
+        offset += 1;
+    }
+    common::Result::Ok(())
 }
 
 /// Verify one or more sectors on a block device (that is read them and
@@ -660,6 +727,15 @@ extern "C" fn time_ticks_get() -> common::Ticks {
 /// We have a 1 MHz timer
 extern "C" fn time_ticks_per_second() -> common::Ticks {
     common::Ticks(1_000_000)
+}
+
+#[panic_handler]
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    let mut uart0: Uart<0x5930_3000> = Uart();
+    let _ = write!(uart0, "PANIC!\r\n{:#?}\r\n", info);
+    loop {
+        cortex_m::asm::wfi();
+    }
 }
 
 // End of file
