@@ -132,7 +132,7 @@ impl<const ADDR: usize> Uart<ADDR> {
 /// Describes the hardware in the system
 struct Hardware {
     _cp: cortex_m::Peripherals,
-    uart0: Uart<0x4000_4000>,
+    uart0: Uart<0x5930_3000>,
 }
 
 static HARDWARE: mutex::NeoMutex<Option<Hardware>> = mutex::NeoMutex::new(None);
