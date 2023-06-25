@@ -42,7 +42,11 @@ This BIOS will run on QEMU when set to emulate an Arm MPS2-AN385.
 
 ## Changelog
 
-### Unreleased Changes ([Source](https://github.com/thejpster/neotron-qemu-bios/tree/master) | [Changes](https://github.com/thejpster/neotron-qemu-bios/compare/v0.2.0...master))
+### Unreleased Changes ([Source](https://github.com/thejpster/neotron-qemu-bios/tree/main) | [Changes](https://github.com/thejpster/neotron-qemu-bios/compare/v0.1.0..main))
+
+* None
+
+### v0.1.0 ([Source](https://github.com/thejpster/neotron-qemu-bios/tree/v0.1.0)
 
 * First release
 
