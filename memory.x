@@ -24,10 +24,9 @@ _ram_os_len = LENGTH(RAM_OS);
 
 _tpa_start = ORIGIN(RAM_OS);
 
-/* We use this for block device emulation */
 
 SECTIONS {
-    /* Disk image */
+    /* We use this for block device emulation */
     .disk_image ORIGIN(DDR4_SDRAM) :
     {
         _disk_start = .;

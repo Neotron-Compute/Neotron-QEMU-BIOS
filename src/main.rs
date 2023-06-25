@@ -17,6 +17,8 @@ extern "C" {
     static mut _flash_os_len: u32;
     static mut _ram_os_start: u32;
     static mut _ram_os_len: u32;
+    static mut _disk_start: u32;
+    static mut _disk_end: u32;
 }
 
 /// Where the OS can put the text characters
@@ -158,6 +160,9 @@ struct Hardware {
 
 static HARDWARE: mutex::NeoMutex<Option<Hardware>> = mutex::NeoMutex::new(None);
 
+#[link_section = ".disk_image"]
+static mut DISK_IMAGE: [u8; 64 * 1024 * 1024] = *include_bytes!("disk.img");
+
 /// Entry point for the BIOS. This is called by the startup code.
 #[entry]
 fn bios_main() -> ! {
@@ -166,6 +171,8 @@ fn bios_main() -> ! {
 
     // Print the BIOS version
     write!(h.uart0, "Neotron QEMU BIOS {}\r\n", BIOS_VERSION).unwrap();
+    write!(h.uart0, "Disk Start: {:p}\r\n", unsafe { &_disk_start }).unwrap();
+    write!(h.uart0, "Disk End  : {:p}\r\n", unsafe { &_disk_end }).unwrap();
 
     *HARDWARE.lock() = Some(h);
 
@@ -616,8 +623,22 @@ extern "C" fn bus_interrupt_status() -> u32 {
 /// The set of devices is not expected to change at run-time - removal of
 /// media is indicated with a boolean field in the
 /// `block_dev::DeviceInfo` structure.
-pub extern "C" fn block_dev_get_info(_device: u8) -> common::Option<common::block_dev::DeviceInfo> {
-    common::Option::None
+pub extern "C" fn block_dev_get_info(device: u8) -> common::Option<common::block_dev::DeviceInfo> {
+    if device == 0 {
+        // Our emulated disk drive, sitting in DDR4 SDRAM
+        common::Option::Some(common::block_dev::DeviceInfo {
+            name: common::ApiString::new("ddr0"),
+            device_type: common::block_dev::DeviceType::HardDiskDrive,
+            block_size: 512,
+            num_blocks: unsafe { DISK_IMAGE.len() } as u64 / 512,
+            ejectable: false,
+            removable: false,
+            media_present: true,
+            read_only: false,
+        })
+    } else {
+        common::Option::None
+    }
 }
 
 /// Write one or more sectors to a block device.
@@ -629,12 +650,22 @@ pub extern "C" fn block_dev_get_info(_device: u8) -> common::Option<common::bloc
 /// There are no requirements on the alignment of `data` but if it is
 /// aligned, the BIOS may be able to use a higher-performance code path.
 pub extern "C" fn block_write(
-    _device: u8,
-    _block: common::block_dev::BlockIdx,
+    device: u8,
+    block: common::block_dev::BlockIdx,
     _num_blocks: u8,
-    _data: common::ApiByteSlice,
+    data: common::ApiByteSlice,
 ) -> common::Result<()> {
-    common::Result::Err(common::Error::Unimplemented)
+    if device != 0 {
+        return common::Result::Err(common::Error::InvalidDevice);
+    }
+    let mut offset = (block.0 * 512) as usize;
+    for b in data.as_slice() {
+        unsafe {
+            DISK_IMAGE[offset] = *b;
+        }
+        offset += 1;
+    }
+    common::Result::Ok(())
 }
 
 /// Read one or more sectors to a block device.
@@ -646,12 +677,22 @@ pub extern "C" fn block_write(
 /// There are no requirements on the alignment of `data` but if it is
 /// aligned, the BIOS may be able to use a higher-performance code path.
 pub extern "C" fn block_read(
-    _device: u8,
-    _block: common::block_dev::BlockIdx,
+    device: u8,
+    block: common::block_dev::BlockIdx,
     _num_blocks: u8,
-    _data: common::ApiBuffer,
+    mut data: common::ApiBuffer,
 ) -> common::Result<()> {
-    common::Result::Err(common::Error::Unimplemented)
+    if device != 0 {
+        return common::Result::Err(common::Error::InvalidDevice);
+    }
+    let mut offset = (block.0 * 512) as usize;
+    for b in data.as_mut_slice().unwrap() {
+        unsafe {
+            *b = DISK_IMAGE[offset];
+        }
+        offset += 1;
+    }
+    common::Result::Ok(())
 }
 
 /// Verify one or more sectors on a block device (that is read them and
