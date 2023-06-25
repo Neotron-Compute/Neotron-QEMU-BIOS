@@ -5,9 +5,9 @@
 #![no_std]
 #![no_main]
 
-extern crate panic_semihosting;
-
 mod mutex;
+
+use core::fmt::Write;
 
 use cortex_m_rt::entry;
 use neotron_common_bios as common;
@@ -21,6 +21,9 @@ extern "C" {
 
 /// Where the OS can put the text characters
 static mut VRAM: [(u8, u8); 80 * 50] = [(0, 0); 80 * 50];
+
+/// The clock speed of the peripheral subsystem on an SSE-300 SoC an on MPS3 board
+const PERIPHERAL_CLOCK: u32 = 25_000_000;
 
 /// BIOS Version
 static BIOS_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -85,7 +88,9 @@ impl<const ADDR: usize> Uart<ADDR> {
     const STATUS_RX_NON_EMPTY: u32 = 1 << 1;
 
     /// Turn on TX and RX
-    fn enable(&mut self) {
+    fn enable(&mut self, baudrate: u32, system_clock: u32) {
+        let divider = system_clock / baudrate;
+        self.set_bauddiv(divider);
         self.set_control(0b0000_0011);
     }
 
@@ -123,9 +128,25 @@ impl<const ADDR: usize> Uart<ADDR> {
         unsafe { ptr.read_volatile() }
     }
 
+    /// Set the control register
     fn set_control(&mut self, data: u32) {
         let ptr = (ADDR + 8) as *mut u32;
         unsafe { ptr.write_volatile(data) }
+    }
+
+    /// Set the baud rate divider register
+    fn set_bauddiv(&mut self, data: u32) {
+        let ptr = (ADDR + 16) as *mut u32;
+        unsafe { ptr.write_volatile(data) }
+    }
+}
+
+impl<const N: usize> core::fmt::Write for Uart<N> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        for b in s.bytes() {
+            self.write(b);
+        }
+        Ok(())
     }
 }
 
@@ -141,10 +162,10 @@ static HARDWARE: mutex::NeoMutex<Option<Hardware>> = mutex::NeoMutex::new(None);
 #[entry]
 fn bios_main() -> ! {
     // Set up the hardware
-    let h = hardware_setup();
+    let mut h = hardware_setup();
 
     // Print the BIOS version
-    cortex_m_semihosting::hprintln!("Neotron QEMU BIOS {}", BIOS_VERSION);
+    write!(h.uart0, "Neotron QEMU BIOS {}\r\n", BIOS_VERSION).unwrap();
 
     *HARDWARE.lock() = Some(h);
 
@@ -153,9 +174,11 @@ fn bios_main() -> ! {
 
 /// Configure the hardware
 fn hardware_setup() -> Hardware {
+    let mut uart0 = Uart();
+    uart0.enable(115200, PERIPHERAL_CLOCK);
     Hardware {
         _cp: cortex_m::Peripherals::take().expect("Couldn't get hardware"),
-        uart0: Uart(),
+        uart0,
     }
 }
 
@@ -203,13 +226,13 @@ pub extern "C" fn serial_get_info(device: u8) -> common::Option<common::serial::
 /// options are invalid for that serial device.
 pub extern "C" fn serial_configure(
     device: u8,
-    _config: common::serial::Config,
+    config: common::serial::Config,
 ) -> common::Result<()> {
     if device == 0 {
         let mut hw = HARDWARE.lock();
         let hw = hw.as_mut().unwrap();
         // Ignore all the settings and just turn the thing on
-        hw.uart0.enable();
+        hw.uart0.enable(config.data_rate_bps, PERIPHERAL_CLOCK);
     }
     common::Result::Ok(())
 }
@@ -229,6 +252,9 @@ pub extern "C" fn serial_write(
         let hw = hw.as_mut().unwrap();
         let bytes = data.as_slice();
         for b in bytes {
+            if *b == b'\n' {
+                hw.uart0.write(b'\r');
+            }
             hw.uart0.write(*b);
         }
         common::Result::Ok(bytes.len())
@@ -660,6 +686,15 @@ extern "C" fn time_ticks_get() -> common::Ticks {
 /// We have a 1 MHz timer
 extern "C" fn time_ticks_per_second() -> common::Ticks {
     common::Ticks(1_000_000)
+}
+
+#[panic_handler]
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    let mut uart0: Uart<0x5930_3000> = Uart();
+    let _ = write!(uart0, "PANIC!\r\n{:#?}\r\n", info);
+    loop {
+        cortex_m::asm::wfi();
+    }
 }
 
 // End of file

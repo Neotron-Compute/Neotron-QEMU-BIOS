@@ -1,13 +1,19 @@
 MEMORY
 {
   /* NOTE 1 K = 1 KiBi = 1024 bytes */
-  /* qemu-system-arm -machine mps2-an385 has 4MB Flash and 4MB SRAM */
-  /* The BIOS has 128K of flash */
+  /* The MPS3-AN547 boots from 512K of ITCM SRAM at 0x0000_0000 */
   FLASH : ORIGIN = 0x00000000, LENGTH = 512K
-  /* Top of DTCM is for the BIOS and the OS */
+  /* We have 512K of DTCM at 0x2000_0000. We use 32K at the top for the BIOS and OS stuff. */
   RAM : ORIGIN = 0x20078000, LENGTH = 32K
-  /* Bottom is for the Application area, but skipping 4K */
+  /*
+   * This is for the TPA, but skipping the first 4K (to match
+   * other platforms)
+   */
   RAM_OS : ORIGIN = 0x20001000, LENGTH = 476K
+
+  FPGA_SRAM: ORIGIN = 0x01000000, LENGTH = 2M
+
+  DDR4_SDRAM: ORIGIN = 0x60000000, LENGTH = 2048M
 }
 
 /*
@@ -17,3 +23,15 @@ _ram_os_start = ORIGIN(RAM_OS);
 _ram_os_len = LENGTH(RAM_OS);
 
 _tpa_start = ORIGIN(RAM_OS);
+
+/* We use this for block device emulation */
+
+SECTIONS {
+    /* Disk image */
+    .disk_image ORIGIN(DDR4_SDRAM) :
+    {
+        _disk_start = .;
+        KEEP(*(.disk_image));
+        _disk_end = .;
+    } > DDR4_SDRAM
+} INSERT BEFORE .text;
