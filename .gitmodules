@@ -1,0 +1,3 @@
+[submodule "neotron-os"]
+	path = neotron-os
+	url = https://github.com/neotron-compute/neotron-os
