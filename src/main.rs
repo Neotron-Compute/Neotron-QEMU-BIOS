@@ -80,6 +80,8 @@ static API_CALLS: common::Api = common::Api {
     block_read,
     block_verify,
     power_idle,
+    power_control,
+    compare_and_swap_bool,
 };
 
 /// A driver for CMSDK Uart
@@ -202,8 +204,8 @@ pub extern "C" fn api_version_get() -> common::Version {
 /// also pass the length (excluding the null) to make it easy to construct
 /// a Rust string. It is unspecified as to whether the string is located
 /// in Flash ROM or RAM (but it's likely to be Flash ROM).
-pub extern "C" fn bios_version_get() -> common::ApiString<'static> {
-    common::ApiString::new(BIOS_VERSION)
+pub extern "C" fn bios_version_get() -> common::FfiString<'static> {
+    common::FfiString::new(BIOS_VERSION)
 }
 
 /// Get information about the Serial ports in the system.
@@ -218,14 +220,14 @@ pub extern "C" fn bios_version_get() -> common::ApiString<'static> {
 /// that is an Operating System level design feature. These APIs just
 /// reflect the raw hardware, in a similar manner to the registers exposed
 /// by a memory-mapped UART peripheral.
-pub extern "C" fn serial_get_info(device: u8) -> common::Option<common::serial::DeviceInfo> {
+pub extern "C" fn serial_get_info(device: u8) -> common::FfiOption<common::serial::DeviceInfo> {
     if device == 0 {
-        common::Option::Some(common::serial::DeviceInfo {
-            name: common::ApiString::new("ser0"),
+        common::FfiOption::Some(common::serial::DeviceInfo {
+            name: common::FfiString::new("ser0"),
             device_type: common::serial::DeviceType::TtlUart,
         })
     } else {
-        common::Option::None
+        common::FfiOption::None
     }
 }
 
@@ -234,14 +236,14 @@ pub extern "C" fn serial_get_info(device: u8) -> common::Option<common::serial::
 pub extern "C" fn serial_configure(
     device: u8,
     config: common::serial::Config,
-) -> common::Result<()> {
+) -> common::ApiResult<()> {
     if device == 0 {
         let mut hw = HARDWARE.lock();
         let hw = hw.as_mut().unwrap();
         // Ignore all the settings and just turn the thing on
         hw.uart0.enable(config.data_rate_bps, PERIPHERAL_CLOCK);
     }
-    common::Result::Ok(())
+    common::ApiResult::Ok(())
 }
 
 /// Write bytes to a serial port. There is no sense of 'opening' or
@@ -251,9 +253,9 @@ pub extern "C" fn serial_configure(
 /// only the first `n` bytes were.
 pub extern "C" fn serial_write(
     device: u8,
-    data: common::ApiByteSlice,
-    _timeout: common::Option<common::Timeout>,
-) -> common::Result<usize> {
+    data: common::FfiByteSlice,
+    _timeout: common::FfiOption<common::Timeout>,
+) -> common::ApiResult<usize> {
     if device == 0 {
         let mut hw = HARDWARE.lock();
         let hw = hw.as_mut().unwrap();
@@ -264,9 +266,9 @@ pub extern "C" fn serial_write(
             }
             hw.uart0.write(*b);
         }
-        common::Result::Ok(bytes.len())
+        common::ApiResult::Ok(bytes.len())
     } else {
-        common::Result::Err(common::Error::InvalidDevice)
+        common::ApiResult::Err(common::Error::InvalidDevice)
     }
 }
 
@@ -277,14 +279,14 @@ pub extern "C" fn serial_write(
 ///  first `n` bytes were filled in.
 pub extern "C" fn serial_read(
     device: u8,
-    mut data: common::ApiBuffer,
-    _timeout: common::Option<common::Timeout>,
-) -> common::Result<usize> {
+    mut data: common::FfiBuffer,
+    _timeout: common::FfiOption<common::Timeout>,
+) -> common::ApiResult<usize> {
     if device == 0 {
         let mut hw = HARDWARE.lock();
         let hw = hw.as_mut().unwrap();
         let Some(bytes) = data.as_mut_slice() else {
-            return common::Result::Err(common::Error::UnsupportedConfiguration(0));
+            return common::ApiResult::Err(common::Error::UnsupportedConfiguration(0));
         };
         let mut count = 0;
         for b in bytes {
@@ -295,9 +297,9 @@ pub extern "C" fn serial_read(
                 break;
             }
         }
-        common::Result::Ok(count)
+        common::ApiResult::Ok(count)
     } else {
-        common::Result::Err(common::Error::InvalidDevice)
+        common::ApiResult::Err(common::Error::InvalidDevice)
     }
 }
 
@@ -336,25 +338,25 @@ pub extern "C" fn time_clock_set(_time: common::Time) {}
 ///
 /// However, in this BIOS we are linked to the OS so we can cheat and encode the
 /// bytes with postcard directly.
-pub extern "C" fn configuration_get(mut buffer: common::ApiBuffer) -> common::Result<usize> {
+pub extern "C" fn configuration_get(mut buffer: common::FfiBuffer) -> common::ApiResult<usize> {
     let mut config = neotron_os::OsConfig::default();
     config.set_serial_console_on(115_200);
     config.set_vga_console(false);
 
     let Some(buffer) = buffer.as_mut_slice() else {
-        return common::Result::Err(common::Error::UnsupportedConfiguration(0));
+        return common::ApiResult::Err(common::Error::UnsupportedConfiguration(0));
     };
     match postcard::to_slice(&config, buffer) {
-        Ok(slice) => common::Result::Ok(slice.len()),
-        Err(_e) => common::Result::Err(common::Error::UnsupportedConfiguration(0)),
+        Ok(slice) => common::ApiResult::Ok(slice.len()),
+        Err(_e) => common::ApiResult::Err(common::Error::UnsupportedConfiguration(0)),
     }
 }
 
 /// Set the configuration data block.
 ///
 /// See `configuration_get`.
-pub extern "C" fn configuration_set(_buffer: common::ApiByteSlice) -> common::Result<()> {
-    common::Result::Ok(())
+pub extern "C" fn configuration_set(_buffer: common::FfiByteSlice) -> common::ApiResult<()> {
+    common::ApiResult::Ok(())
 }
 
 /// Does this Neotron BIOS support this video mode?
@@ -371,8 +373,8 @@ pub extern "C" fn video_is_valid_mode(_mode: common::video::Mode) -> bool {
 /// `video_get_framebuffer` will return `null`. You must then supply a
 /// pointer to a block of size `Mode::frame_size_bytes()` to
 /// `video_set_framebuffer` before any video will appear.
-pub extern "C" fn video_set_mode(_mode: common::video::Mode) -> common::Result<()> {
-    common::Result::Err(common::Error::UnsupportedConfiguration(0))
+pub extern "C" fn video_set_mode(_mode: common::video::Mode) -> common::ApiResult<()> {
+    common::ApiResult::Err(common::Error::UnsupportedConfiguration(0))
 }
 
 /// Returns the video mode the BIOS is currently in.
@@ -412,8 +414,8 @@ pub extern "C" fn video_get_framebuffer() -> *mut u8 {
 ///
 /// The pointer must point to enough video memory to handle the current video
 /// mode, and any future video mode you set.
-pub unsafe extern "C" fn video_set_framebuffer(_buffer: *const u8) -> common::Result<()> {
-    common::Result::Err(common::Error::Unimplemented)
+pub unsafe extern "C" fn video_set_framebuffer(_buffer: *const u8) -> common::ApiResult<()> {
+    common::ApiResult::Err(common::Error::Unimplemented)
 }
 
 /// Find out whether the given video mode needs more VRAM than we currently have.
@@ -441,17 +443,17 @@ pub extern "C" fn video_mode_needs_vram(_mode: common::video::Mode) -> bool {
 /// (other than Region 0), so faster memory should be listed first.
 ///
 /// If the region number given is invalid, the function returns `(null, 0)`.
-pub extern "C" fn memory_get_region(region: u8) -> common::Option<common::MemoryRegion> {
+pub extern "C" fn memory_get_region(region: u8) -> common::FfiOption<common::MemoryRegion> {
     match region {
         0 => {
             // Application Region
-            common::Option::Some(common::MemoryRegion {
+            common::FfiOption::Some(common::MemoryRegion {
                 start: unsafe { &mut _ram_os_start as *mut u32 } as *mut u8,
                 length: unsafe { &mut _ram_os_len as *const u32 } as usize,
                 kind: common::MemoryKind::Ram,
             })
         }
-        _ => common::Option::None,
+        _ => common::FfiOption::None,
     }
 }
 
@@ -480,13 +482,13 @@ pub extern "C" fn memory_get_region(region: u8) -> common::Option<common::Memory
 /// a single KeyCode enum. Plus, Scan Code Set 2 is a pain, because most of the
 /// 'extended' keys they added on the IBM PC/AT actually generate two bytes, not
 /// one. It's much nicer when your Scan Codes always have one byte per key.
-pub extern "C" fn hid_get_event() -> common::Result<common::Option<common::hid::HidEvent>> {
-    common::Result::Ok(common::Option::None)
+pub extern "C" fn hid_get_event() -> common::ApiResult<common::FfiOption<common::hid::HidEvent>> {
+    common::ApiResult::Ok(common::FfiOption::None)
 }
 
 /// Control the keyboard LEDs.
-pub extern "C" fn hid_set_leds(_leds: common::hid::KeyboardLeds) -> common::Result<()> {
-    common::Result::Err(common::Error::Unimplemented)
+pub extern "C" fn hid_set_leds(_leds: common::hid::KeyboardLeds) -> common::ApiResult<()> {
+    common::ApiResult::Err(common::Error::Unimplemented)
 }
 
 /// Wait for the next occurence of the specified video scan-line.
@@ -518,8 +520,8 @@ pub extern "C" fn hid_set_leds(_leds: common::hid::KeyboardLeds) -> common::Resu
 pub extern "C" fn video_wait_for_line(_line: u16) {}
 
 /// Read the RGB palette.
-extern "C" fn video_get_palette(_index: u8) -> common::Option<common::video::RGBColour> {
-    common::Option::None
+extern "C" fn video_get_palette(_index: u8) -> common::FfiOption<common::video::RGBColour> {
+    common::FfiOption::None
 }
 
 /// Update the RGB palette.
@@ -532,80 +534,83 @@ unsafe extern "C" fn video_set_whole_palette(
 ) {
 }
 
-extern "C" fn i2c_bus_get_info(_i2c_bus: u8) -> common::Option<common::i2c::BusInfo> {
-    common::Option::None
+extern "C" fn i2c_bus_get_info(_i2c_bus: u8) -> common::FfiOption<common::i2c::BusInfo> {
+    common::FfiOption::None
 }
 
 extern "C" fn i2c_write_read(
     _i2c_bus: u8,
     _i2c_device_address: u8,
-    _tx: common::ApiByteSlice,
-    _tx2: common::ApiByteSlice,
-    _rx: common::ApiBuffer,
-) -> common::Result<()> {
-    common::Result::Err(common::Error::Unimplemented)
+    _tx: common::FfiByteSlice,
+    _tx2: common::FfiByteSlice,
+    _rx: common::FfiBuffer,
+) -> common::ApiResult<()> {
+    common::ApiResult::Err(common::Error::Unimplemented)
 }
 
 extern "C" fn audio_mixer_channel_get_info(
     _audio_mixer_id: u8,
-) -> common::Option<common::audio::MixerChannelInfo> {
-    common::Option::None
+) -> common::FfiOption<common::audio::MixerChannelInfo> {
+    common::FfiOption::None
 }
 
-extern "C" fn audio_mixer_channel_set_level(_audio_mixer_id: u8, _level: u8) -> common::Result<()> {
-    common::Result::Err(common::Error::Unimplemented)
+extern "C" fn audio_mixer_channel_set_level(
+    _audio_mixer_id: u8,
+    _level: u8,
+) -> common::ApiResult<()> {
+    common::ApiResult::Err(common::Error::Unimplemented)
 }
 
-extern "C" fn audio_output_set_config(_config: common::audio::Config) -> common::Result<()> {
-    common::Result::Err(common::Error::Unimplemented)
+extern "C" fn audio_output_set_config(_config: common::audio::Config) -> common::ApiResult<()> {
+    common::ApiResult::Err(common::Error::Unimplemented)
 }
 
-extern "C" fn audio_output_get_config() -> common::Result<common::audio::Config> {
-    common::Result::Err(common::Error::Unimplemented)
+extern "C" fn audio_output_get_config() -> common::ApiResult<common::audio::Config> {
+    common::ApiResult::Err(common::Error::Unimplemented)
 }
 
-unsafe extern "C" fn audio_output_data(_samples: common::ApiByteSlice) -> common::Result<usize> {
-    common::Result::Err(common::Error::Unimplemented)
+unsafe extern "C" fn audio_output_data(_samples: common::FfiByteSlice) -> common::ApiResult<usize> {
+    common::ApiResult::Err(common::Error::Unimplemented)
 }
 
-extern "C" fn audio_output_get_space() -> common::Result<usize> {
-    common::Result::Ok(0)
+extern "C" fn audio_output_get_space() -> common::ApiResult<usize> {
+    common::ApiResult::Ok(0)
 }
 
-extern "C" fn audio_input_set_config(_config: common::audio::Config) -> common::Result<()> {
-    common::Result::Err(common::Error::Unimplemented)
+extern "C" fn audio_input_set_config(_config: common::audio::Config) -> common::ApiResult<()> {
+    common::ApiResult::Err(common::Error::Unimplemented)
 }
 
-extern "C" fn audio_input_get_config() -> common::Result<common::audio::Config> {
-    common::Result::Err(common::Error::Unimplemented)
+extern "C" fn audio_input_get_config() -> common::ApiResult<common::audio::Config> {
+    common::ApiResult::Err(common::Error::Unimplemented)
 }
 
-extern "C" fn audio_input_data(_samples: common::ApiBuffer) -> common::Result<usize> {
-    common::Result::Err(common::Error::Unimplemented)
+extern "C" fn audio_input_data(_samples: common::FfiBuffer) -> common::ApiResult<usize> {
+    common::ApiResult::Err(common::Error::Unimplemented)
 }
 
-extern "C" fn audio_input_get_count() -> common::Result<usize> {
-    common::Result::Ok(0)
+extern "C" fn audio_input_get_count() -> common::ApiResult<usize> {
+    common::ApiResult::Ok(0)
 }
 
-extern "C" fn bus_select(_periperal_id: common::Option<u8>) {
+extern "C" fn bus_select(_periperal_id: common::FfiOption<u8>) {
     // Do nothing
 }
 
-extern "C" fn bus_get_info(_periperal_id: u8) -> common::Option<common::bus::PeripheralInfo> {
-    common::Option::None
+extern "C" fn bus_get_info(_periperal_id: u8) -> common::FfiOption<common::bus::PeripheralInfo> {
+    common::FfiOption::None
 }
 
 extern "C" fn bus_write_read(
-    _tx: common::ApiByteSlice,
-    _tx2: common::ApiByteSlice,
-    _rx: common::ApiBuffer,
-) -> common::Result<()> {
-    common::Result::Err(common::Error::Unimplemented)
+    _tx: common::FfiByteSlice,
+    _tx2: common::FfiByteSlice,
+    _rx: common::FfiBuffer,
+) -> common::ApiResult<()> {
+    common::ApiResult::Err(common::Error::Unimplemented)
 }
 
-extern "C" fn bus_exchange(_buffer: common::ApiBuffer) -> common::Result<()> {
-    common::Result::Err(common::Error::Unimplemented)
+extern "C" fn bus_exchange(_buffer: common::FfiBuffer) -> common::ApiResult<()> {
+    common::ApiResult::Err(common::Error::Unimplemented)
 }
 
 extern "C" fn bus_interrupt_status() -> u32 {
@@ -623,11 +628,13 @@ extern "C" fn bus_interrupt_status() -> u32 {
 /// The set of devices is not expected to change at run-time - removal of
 /// media is indicated with a boolean field in the
 /// `block_dev::DeviceInfo` structure.
-pub extern "C" fn block_dev_get_info(device: u8) -> common::Option<common::block_dev::DeviceInfo> {
+pub extern "C" fn block_dev_get_info(
+    device: u8,
+) -> common::FfiOption<common::block_dev::DeviceInfo> {
     if device == 0 {
         // Our emulated disk drive, sitting in DDR4 SDRAM
-        common::Option::Some(common::block_dev::DeviceInfo {
-            name: common::ApiString::new("ddr0"),
+        common::FfiOption::Some(common::block_dev::DeviceInfo {
+            name: common::FfiString::new("ddr0"),
             device_type: common::block_dev::DeviceType::HardDiskDrive,
             block_size: 512,
             num_blocks: unsafe { DISK_IMAGE.len() } as u64 / 512,
@@ -637,7 +644,7 @@ pub extern "C" fn block_dev_get_info(device: u8) -> common::Option<common::block
             read_only: false,
         })
     } else {
-        common::Option::None
+        common::FfiOption::None
     }
 }
 
@@ -653,10 +660,10 @@ pub extern "C" fn block_write(
     device: u8,
     block: common::block_dev::BlockIdx,
     _num_blocks: u8,
-    data: common::ApiByteSlice,
-) -> common::Result<()> {
+    data: common::FfiByteSlice,
+) -> common::ApiResult<()> {
     if device != 0 {
-        return common::Result::Err(common::Error::InvalidDevice);
+        return common::ApiResult::Err(common::Error::InvalidDevice);
     }
     let mut offset = (block.0 * 512) as usize;
     for b in data.as_slice() {
@@ -665,7 +672,7 @@ pub extern "C" fn block_write(
         }
         offset += 1;
     }
-    common::Result::Ok(())
+    common::ApiResult::Ok(())
 }
 
 /// Read one or more sectors to a block device.
@@ -680,10 +687,10 @@ pub extern "C" fn block_read(
     device: u8,
     block: common::block_dev::BlockIdx,
     _num_blocks: u8,
-    mut data: common::ApiBuffer,
-) -> common::Result<()> {
+    mut data: common::FfiBuffer,
+) -> common::ApiResult<()> {
     if device != 0 {
-        return common::Result::Err(common::Error::InvalidDevice);
+        return common::ApiResult::Err(common::Error::InvalidDevice);
     }
     let mut offset = (block.0 * 512) as usize;
     for b in data.as_mut_slice().unwrap() {
@@ -692,7 +699,7 @@ pub extern "C" fn block_read(
         }
         offset += 1;
     }
-    common::Result::Ok(())
+    common::ApiResult::Ok(())
 }
 
 /// Verify one or more sectors on a block device (that is read them and
@@ -708,17 +715,33 @@ pub extern "C" fn block_verify(
     _device: u8,
     _block: common::block_dev::BlockIdx,
     _num_blocks: u8,
-    _data: common::ApiByteSlice,
-) -> common::Result<()> {
-    common::Result::Err(common::Error::Unimplemented)
+    _data: common::FfiByteSlice,
+) -> common::ApiResult<()> {
+    common::ApiResult::Err(common::Error::Unimplemented)
 }
 
-extern "C" fn block_dev_eject(_dev_id: u8) -> common::Result<()> {
-    common::Result::Ok(())
+extern "C" fn block_dev_eject(_dev_id: u8) -> common::ApiResult<()> {
+    common::ApiResult::Ok(())
 }
 
 /// Sleep the CPU until the next interrupt.
 extern "C" fn power_idle() {}
+
+extern "C" fn power_control(_mode: common::PowerMode) -> ! {
+    loop {
+        cortex_m_semihosting::debug::exit(cortex_m_semihosting::debug::EXIT_SUCCESS);
+    }
+}
+
+extern "C" fn compare_and_swap_bool(
+    item: &core::sync::atomic::AtomicBool,
+    old_value: bool,
+    new_value: bool,
+) -> bool {
+    use core::sync::atomic::Ordering;
+    item.compare_exchange(old_value, new_value, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
+}
 
 extern "C" fn time_ticks_get() -> common::Ticks {
     common::Ticks(0)
