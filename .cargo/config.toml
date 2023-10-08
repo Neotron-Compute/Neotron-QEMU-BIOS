@@ -1,7 +1,17 @@
+[target.thumbv7em-none-eabi]
+# You can add `-d in_asm,int,exec,cpu,guest_errors,unimp` before `-kernel` to turn on extra logging.
+# You can add `-gdb tcp::3333 -S` for GDB debugging
+runner = 'qemu-system-arm -cpu cortex-m55 -machine mps3-an547 -serial stdio -semihosting -kernel'
+
 [target.thumbv7m-none-eabi]
 # You can add `-d in_asm,int,exec,cpu,guest_errors,unimp` before `-kernel` to turn on extra logging.
 # You can add `-gdb tcp::3333 -S` for GDB debugging
-runner = 'qemu-system-arm -cpu cortex-m55 -machine mps3-an547 -serial stdio -kernel'
+runner = 'qemu-system-arm -cpu cortex-m55 -machine mps3-an547 -serial stdio -semihosting -kernel'
+
+[target.thumbv6m-none-eabi]
+# You can add `-d in_asm,int,exec,cpu,guest_errors,unimp` before `-kernel` to turn on extra logging.
+# You can add `-gdb tcp::3333 -S` for GDB debugging
+runner = 'qemu-system-arm -cpu cortex-m55 -machine mps3-an547 -serial stdio -semihosting -kernel'
 
 [build]
-target = "thumbv7m-none-eabi"
+target = "thumbv6m-none-eabi"
