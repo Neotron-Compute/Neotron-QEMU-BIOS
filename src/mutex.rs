@@ -31,10 +31,9 @@ impl<T> NeoMutex<T> {
     ///
     /// Panics if the mutex is already locked.
     pub fn lock(&self) -> NeoMutexGuard<T> {
-        let _ = self
-            .locked
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .unwrap();
+        if !super::compare_and_swap_bool(&self.locked, false, true) {
+            panic!("Concurrent locks");
+        }
         NeoMutexGuard { parent: self }
     }
 }

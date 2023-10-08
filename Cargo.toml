@@ -7,12 +7,13 @@ readme = "README.md"
 license = "GPL3"
 
 [dependencies]
-cortex-m = "0.7"
+cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
 cortex-m-rt = "0.6"
 cortex-m-semihosting = "0.5"
 neotron-common-bios = "*"
 postcard = "1.0"
 serde = { version = "1.0", default-features = false }
+critical-section = "1.0"
 
 [dependencies.neotron-os]
 path = "./neotron-os"

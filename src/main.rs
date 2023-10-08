@@ -341,7 +341,7 @@ pub extern "C" fn time_clock_set(_time: common::Time) {}
 pub extern "C" fn configuration_get(mut buffer: common::FfiBuffer) -> common::ApiResult<usize> {
     let mut config = neotron_os::OsConfig::default();
     config.set_serial_console_on(115_200);
-    config.set_vga_console(false);
+    config.set_vga_console(None);
 
     let Some(buffer) = buffer.as_mut_slice() else {
         return common::ApiResult::Err(common::Error::UnsupportedConfiguration(0));
@@ -549,9 +549,23 @@ extern "C" fn i2c_write_read(
 }
 
 extern "C" fn audio_mixer_channel_get_info(
-    _audio_mixer_id: u8,
+    audio_mixer_id: u8,
 ) -> common::FfiOption<common::audio::MixerChannelInfo> {
-    common::FfiOption::None
+    match audio_mixer_id {
+        0 => common::FfiOption::Some(common::audio::MixerChannelInfo {
+            name: common::FfiString::new("LineOut"),
+            direction: common::audio::Direction::Output,
+            max_level: 255,
+            current_level: 100,
+        }),
+        1 => common::FfiOption::Some(common::audio::MixerChannelInfo {
+            name: common::FfiString::new("LineIn"),
+            direction: common::audio::Direction::Input,
+            max_level: 64,
+            current_level: 0,
+        }),
+        _ => common::FfiOption::None,
+    }
 }
 
 extern "C" fn audio_mixer_channel_set_level(
@@ -739,8 +753,15 @@ extern "C" fn compare_and_swap_bool(
     new_value: bool,
 ) -> bool {
     use core::sync::atomic::Ordering;
-    item.compare_exchange(old_value, new_value, Ordering::SeqCst, Ordering::SeqCst)
-        .is_ok()
+    critical_section::with(|_| {
+        let current = item.load(Ordering::SeqCst);
+        if current == old_value {
+            item.store(new_value, Ordering::SeqCst);
+            true
+        } else {
+            false
+        }
+    })
 }
 
 extern "C" fn time_ticks_get() -> common::Ticks {
